@@ -22,6 +22,7 @@ static void *checkpointer(const void *vaddr);
 static void err_exit(void);
 static int get_user(const uint8_t *uaddr);
 static void check_buffer(const void *vaddr, size_t size);
+static void check_and_preload_buffer (void *buffer, unsigned size, bool writable);
 
 struct thread_file * find_file_id (uint32_t file_id);
 bool is_valid_pointer (void* esp,uint8_t argc);
@@ -84,7 +85,7 @@ static void* checkpointer(const void *vaddr){
     if(ptr == NULL){
         err_exit(); 
     } 
-      uint8_t *check_byteptr = (uint8_t *) vaddr;
+    uint8_t *check_byteptr = (uint8_t *) vaddr;
     for (uint8_t i = 0; i < 4; i++) 
     {
         if (get_user(check_byteptr + i) == -1)
@@ -183,9 +184,11 @@ void sys_read(struct intr_frame* f){
   int fd = *user_ptr;
   uint8_t * buffer = (uint8_t*)*(user_ptr+1);
   off_t size = *(user_ptr+2);
-  if (!is_valid_pointer (buffer, 1) || !is_valid_pointer (buffer + size,1)){
-    err_exit();
-  }
+
+  // if (!is_valid_pointer (buffer, 1) || !is_valid_pointer (buffer + size,1)){
+  //   err_exit();
+  // }
+  check_and_preload_buffer(buffer,size,true);
   if (fd == 0)//stdin
   {
     for (int i = 0; i < size; i++)
@@ -289,14 +292,50 @@ struct thread_file * find_file_id (uint32_t file_id){
   return false;
 }
 bool is_valid_pointer (void* esp,uint8_t argc){
-  for (uint8_t i = 0; i < argc; ++i)
-  {
-    if((!is_user_vaddr (esp)) || (pagedir_get_page (thread_current()->pagedir, esp)==NULL)){
-      return false;
-    }
-  }
-  return true; 
+    return  esp != NULL && is_user_vaddr(esp);
+  // for (uint8_t i = 0; i < argc; ++i)
+  // {
+  //   if((!is_user_vaddr (esp)) || (pagedir_get_page (thread_current()->pagedir, esp)==NULL)){
+  //     return false;
+  //   }
+  // }
+  // return true; 
 }
+/* 在 syscall.c 中实现 */
+static
+void check_and_preload_buffer (void *buffer, unsigned size, bool writable) {
+    char *ptr = (char *) buffer;
+    
+    for (unsigned i = 0; i < size; i += PGSIZE) {
+        /* 1. 首先检查地址是否属于用户空间（基础检查） */
+        if (!is_user_vaddr (ptr + i)) {
+            err_exit();
+        }
+
+        /* 2. 强行触发 Page Fault */
+        if (writable) {
+            /* 尝试写入：如果该页是 FROM_FILE 或 ON_SWAP，
+               此时会进入 handle_mm_default，且线程不持有 filesys_lock */
+            *(ptr + i) = *(ptr + i); 
+        } else {
+            /* 尝试读取：只需读出一个字节即可 */
+            char temp = *(ptr + i);
+            (void) temp; // 防止编译器警告变量未使用
+        }
+        
+        /* 3. (可选但推荐) 如果你实现了 Pinning，在这里把页钉住 */
+        // vm_frame_set_pinned(ptr + i,true); 
+    }
+
+    /* 别忘了检查 Buffer 的最后一个字节，防止跨页 */
+    if (size > 0) {
+        void *last_byte = (char *)buffer + size - 1;
+        if (!is_user_vaddr (last_byte)) err_exit();
+        if (writable) *(char *)last_byte = *(char *)last_byte;
+        else { char temp = *(char *)last_byte; (void)temp; }
+    }
+}
+
 static int get_user(const uint8_t *uaddr){
     int result;
     asm ("movl $1f, %0; movzbl %1, %0; 1:" : "=&a" (result) : "m" (*uaddr));

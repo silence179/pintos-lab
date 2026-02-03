@@ -13,13 +13,21 @@
 #include "userprog/pagedir.h"
 #include "threads/malloc.h"
 
+#include "userprog/process.h"
+#include "vm/swap.h"
+#include "vm/frame.h"
 
 
 struct supt_entry * supt_lookup(struct hash* supt,void * upage){
     struct supt_entry tmp_entry;
     tmp_entry.upage = upage;
-    struct hash_elem* tmp_elem = hash_find(supt,upage);
-    return hash_entry(tmp_elem,struct supt_entry, hash_elem);
+    
+    struct hash_elem* tmp_elem = hash_find(supt, &tmp_entry.hash_elem);
+    if (tmp_elem == NULL) {
+        return NULL;
+    }
+    
+    return hash_entry(tmp_elem, struct supt_entry, hash_elem);
 }
 
 bool lazy_load_frame(struct file *file, off_t ofs, uint8_t *upage, uint32_t read_bytes, uint32_t zero_bytes, bool writable){
@@ -70,8 +78,9 @@ bool handle_mm_default(void *fault_addr,void *esp UNUSED){
         if (kpage == NULL)
             return false;
 
-        file_seek(entry->file, entry->offset);
-        if (file_read(entry->file, kpage,entry->read_bytes) != (int)entry->read_bytes){
+        // file_seek(entry->file, entry->offset);
+        // if (file_read(entry->file, kpage,entry->read_bytes) != (int)entry->read_bytes){
+        if(file_read_at(entry->file,kpage,entry->read_bytes,entry->offset) != (int)entry->read_bytes){
             vm_frame_free(kpage,true);
             return false;
         }
@@ -85,6 +94,30 @@ bool handle_mm_default(void *fault_addr,void *esp UNUSED){
         entry->kpage =  kpage; 
         entry->type = ON_FRAME;
         unpin_frame(kpage);
+        return true;
+    }
+    if(entry->type == ON_SWAP){
+        /* 1. 分配一个物理帧 */
+        void *kpage = vm_frame_alloc(PAL_USER, upage);
+        if (kpage == NULL)
+            return false;
+
+        /* 2. 从 Swap 分区读回数据 */
+        /* 注意：swap_in 内部应该负责将数据写到 kpage，并释放 swap_index */
+        swap_in(kpage,entry->swap_index);
+
+        /* 3. 建立映射 */
+        if(!install_page(upage, kpage, entry->writable)){
+            vm_frame_free(kpage, true);
+            return false;
+        }
+
+        /* 4. 更新状态 */
+        entry->kpage = kpage;
+        entry->type = ON_FRAME;
+        
+        // 记得处理 pin 逻辑，如果是补页触发，补完通常可以 unpin
+        unpin_frame(kpage); 
         return true;
     }
 

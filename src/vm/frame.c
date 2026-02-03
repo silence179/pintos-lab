@@ -58,24 +58,32 @@ void vm_frame_init(void){
 void * vm_frame_alloc(enum palloc_flags flags,void * upage){
     lock_acquire(&frame_lock);
     void * kpage = palloc_get_page(flags);
-    if(kpage == NULL){ //空间不够了,我们需要挑出一个页面来牺牲
-        // PANIC("swap haven't been implemented");//暂时直接panic
+    if (kpage == NULL) {
         struct frame_table_entry * f_evicted = pick_a_frame_evict();
-        struct thread * owner = f_evicted->thread;
-
-        struct supt_entry* entry = supt_lookup(&owner->supt->page_map,f_evicted->upage);
-        pagedir_clear_page(owner->pagedir, f_evicted->upage);
-
-        bool is_dirty = pagedir_is_dirty(owner->pagedir, f_evicted->upage);
-
+        if (clock_ptr == &f_evicted->list_elem) {
+            clock_ptr = list_next(clock_ptr);
+            // 如果推一下到了末尾，绕回到开头
+            if (clock_ptr == list_end(&frame_list)) {
+                clock_ptr = list_begin(&frame_list);
+            }
+        }     
+        // --- 核心修改：手动清理，不调用 vm_frame_free ---
+        list_remove(&f_evicted->list_elem);
+        hash_delete(&frame_map, &f_evicted->hash_elem);
+        
+        // 获取 Swap 等信息（此时可以考虑暂时释放锁来提速，但必须保证同步）
+        struct supt_entry* entry = supt_lookup(&f_evicted->thread->supt->page_map, f_evicted->upage);
+        
+        pagedir_clear_page(f_evicted->thread->pagedir, f_evicted->upage);
         entry->type = ON_SWAP;
-        size_t index = swap_out(entry->kpage);
+        entry->swap_index = swap_out(f_evicted->kpage); // 这里会做磁盘 IO
         entry->kpage = NULL;
-        entry->swap_index = index;
 
-        vm_frame_free(f_evicted->kpage,true);
+        palloc_free_page(f_evicted->kpage);
+        kpage = palloc_get_page(flags); 
+        free(f_evicted);    
     }
-
+    
     struct frame_table_entry * frame = malloc(sizeof(struct frame_table_entry));
     if(frame == NULL){
         lock_release(&frame_lock);
@@ -128,6 +136,9 @@ struct frame_table_entry * pick_a_frame_evict(void){
         struct frame_table_entry * entry = clock_ptr_next();
         if (entry->pinned)
             continue;
+        if(entry->thread == NULL || entry->thread->pagedir == NULL){
+            return entry;
+        }
         else if(pagedir_is_accessed(entry->thread->pagedir,entry->upage)){
             pagedir_set_accessed(entry->thread->pagedir, entry->upage, false);
             continue;
@@ -141,13 +152,16 @@ struct frame_table_entry * pick_a_frame_evict(void){
 
 struct frame_table_entry * clock_ptr_next(void){
     if(list_empty(&frame_list))
-        PANIC("frame_list is empty , memery leak");
+        PANIC("frame_list is empty");
+
+    // 如果是第一次运行或者刚好走到了末尾
     if(clock_ptr == NULL || clock_ptr == list_end(&frame_list))
         clock_ptr = list_begin(&frame_list);
-    else 
+    else {
         clock_ptr = list_next(clock_ptr);
-    struct frame_table_entry *e = list_entry(clock_ptr, struct frame_table_entry, list_elem);
-    return e;
+    }
+
+    return list_entry(clock_ptr, struct frame_table_entry, list_elem);
 }
 
 void unpin_frame(void *kpage){
@@ -166,6 +180,25 @@ void unpin_frame(void *kpage){
 
     lock_release(&frame_lock);
 }
+void
+vm_frame_set_pinned (void *kpage, bool new_value)
+{
+  lock_acquire (&frame_lock);
+  // hash lookup : a temporary entry
+  struct frame_table_entry f_tmp;
+  f_tmp.kpage = kpage;
+  struct hash_elem *h = hash_find (&frame_map, &(f_tmp.hash_elem));
+  if (h == NULL) {
+    PANIC ("The frame to be pinned/unpinned does not exist");
+  }
+
+  struct frame_table_entry *f;
+  f = hash_entry(h, struct frame_table_entry, hash_elem);
+  f->pinned = new_value;
+
+  lock_release (&frame_lock);
+}
+
 //hash 的配置函数
 static unsigned frame_hash_func(const struct hash_elem* hash_elem,void * aux UNUSED){
     void* kpage = hash_entry(hash_elem,struct frame_table_entry, hash_elem)->kpage;

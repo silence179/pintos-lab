@@ -160,10 +160,12 @@ page_fault (struct intr_frame *f)
 
   void * esp = user ? f->esp : cur->current_esp;
 
-  if (handle_mm_default(fault_page,f->esp)){
+  if (!handle_mm_default(fault_page,esp)){
       goto fail;
   }
+  return;
 
+fail:
   if (!user)
   {
       f->eip = (void *)f->eax;//eip:寄存器存放下一个CPU指令存放的内存地址 EAX:"累加器"(accumulator), 它是很多加法乘法指令的缺省寄存器。bshd
@@ -173,7 +175,6 @@ page_fault (struct intr_frame *f)
   /* To implement virtual memory, delete the rest of the function
      body, and replace it with code that brings in the page to
      which fault_addr refers. */
-fail:
   printf ("Page fault at %p: %s error %s page in %s context.\n",
           fault_addr,
           not_present ? "not present" : "rights violation",

@@ -5,6 +5,8 @@
 #include "threads/init.h"
 #include "threads/pte.h"
 #include "threads/palloc.h"
+#include <stdio.h>
+#include "threads/thread.h"
 
 static uint32_t *active_pd (void);
 static void invalidate_pagedir (uint32_t *);
@@ -57,7 +59,9 @@ static uint32_t *
 lookup_page (uint32_t *pd, const void *vaddr, bool create)
 {
   uint32_t *pt, *pde;
-
+  if(pd == NULL){
+      printf("PANIC TRAP: Thread %s, vaddr %p\n", thread_current()->name, vaddr);
+  }
   ASSERT (pd != NULL);
 
   /* Shouldn't create new kernel virtual mappings. */
