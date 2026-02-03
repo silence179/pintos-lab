@@ -1,0 +1,8 @@
+#!/usr/bin/env zsh
+
+set -euo pipefail
+
+cd "$(dirname "$0")/build"
+dd if=loader.bin of=loader.bin.tmp bs=512 count=1
+mv loader.bin.tmp loader.bin
+ls -l loader.bin
