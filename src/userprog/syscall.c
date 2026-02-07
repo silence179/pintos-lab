@@ -71,7 +71,9 @@ syscall_handler (struct intr_frame *f )
   if(type < 0 || type >=max_syscall){
       err_exit();
   }
+
   syscalls[type](f);
+
 }
 
 static void* checkpointer(const void *vaddr){
@@ -188,7 +190,7 @@ void sys_read(struct intr_frame* f){
   // if (!is_valid_pointer (buffer, 1) || !is_valid_pointer (buffer + size,1)){
   //   err_exit();
   // }
-  check_and_preload_buffer(buffer,size,true);
+  check_and_preload_buffer(buffer,size,false);
   if (fd == 0)//stdin
   {
     for (int i = 0; i < size; i++)

@@ -56,21 +56,24 @@ void vm_frame_init(void){
 }
 
 void * vm_frame_alloc(enum palloc_flags flags,void * upage){
+    
+    if(lock_held_by_current_thread(&frame_lock)){
+        PANIC("find out1");
+    }
     lock_acquire(&frame_lock);
     void * kpage = palloc_get_page(flags);
     if (kpage == NULL) {
+        // PANIC("here");
         struct frame_table_entry * f_evicted = pick_a_frame_evict();
-        if (clock_ptr == &f_evicted->list_elem) {
-            clock_ptr = list_next(clock_ptr);
-            // 如果推一下到了末尾，绕回到开头
-            if (clock_ptr == list_end(&frame_list)) {
-                clock_ptr = list_begin(&frame_list);
-            }
-        }     
-        // --- 核心修改：手动清理，不调用 vm_frame_free ---
-        list_remove(&f_evicted->list_elem);
-        hash_delete(&frame_map, &f_evicted->hash_elem);
-        
+        // if (clock_ptr == &f_evicted->list_elem) {
+        //     clock_ptr = list_next(clock_ptr);
+        //     // 如果推一下到了末尾，绕回到开头
+        //     if (clock_ptr == list_end(&frame_list)) {
+        //         clock_ptr = list_begin(&frame_list);
+        //     }
+        // }     
+        vm_frame_do_free(kpage, true);
+
         // 获取 Swap 等信息（此时可以考虑暂时释放锁来提速，但必须保证同步）
         struct supt_entry* entry = supt_lookup(&f_evicted->thread->supt->page_map, f_evicted->upage);
         
@@ -89,7 +92,6 @@ void * vm_frame_alloc(enum palloc_flags flags,void * upage){
         lock_release(&frame_lock);
         return NULL;
     }
-
     frame -> kpage = kpage;
     frame -> upage = upage;
     frame -> thread = thread_current();
@@ -104,6 +106,10 @@ void * vm_frame_alloc(enum palloc_flags flags,void * upage){
 }
 
 void vm_frame_free(void * kpage,bool page_free){
+    
+    if(lock_held_by_current_thread(&frame_lock)){
+        PANIC("find out");
+    }
     lock_acquire(&frame_lock);
     struct frame_table_entry tmp_entry;
     tmp_entry.kpage = kpage;
@@ -125,7 +131,26 @@ void vm_frame_free(void * kpage,bool page_free){
     free(f_free);
     lock_release(&frame_lock);
 }
+void vm_frame_do_free(void * kpage,bool page_free){
+    struct frame_table_entry tmp_entry;
+    tmp_entry.kpage = kpage;
 
+    struct hash_elem* tmp_elem = hash_find(&frame_map, &tmp_entry.hash_elem);
+    if(tmp_elem == NULL){
+        PANIC("hash is empty,memery leak");
+    }
+
+    struct frame_table_entry* f_free = hash_entry(tmp_elem,struct frame_table_entry,hash_elem);
+
+    pagedir_clear_page(f_free->thread->pagedir, f_free->upage);
+
+    hash_delete(&frame_map,&f_free->hash_elem);
+    list_remove(&f_free->list_elem);
+
+    if(page_free)
+        palloc_free_page(kpage);
+    free(f_free);
+}
 
 struct frame_table_entry * pick_a_frame_evict(void){
     size_t size_n = hash_size(&frame_map);
@@ -165,7 +190,10 @@ struct frame_table_entry * clock_ptr_next(void){
 }
 
 void unpin_frame(void *kpage){
-
+  
+    if(lock_held_by_current_thread(&frame_lock)){
+        PANIC("find out");
+    }  
     ASSERT(pg_ofs(kpage)==0);
     lock_acquire(&frame_lock);
 
@@ -183,6 +211,9 @@ void unpin_frame(void *kpage){
 void
 vm_frame_set_pinned (void *kpage, bool new_value)
 {
+  if(lock_held_by_current_thread(&frame_lock)){
+      PANIC("find out");
+  }
   lock_acquire (&frame_lock);
   // hash lookup : a temporary entry
   struct frame_table_entry f_tmp;

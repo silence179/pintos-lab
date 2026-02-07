@@ -93,6 +93,8 @@ static struct lock lock_f;
 void 
 acquire_lock_f (void)
 {
+    if(lock_held_by_current_thread(&lock_f))
+        PANIC("find?");
   lock_acquire(&lock_f);
 }
 

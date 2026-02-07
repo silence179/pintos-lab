@@ -194,7 +194,16 @@ lock_acquire (struct lock *lock)
 {
   ASSERT (lock != NULL);
   ASSERT (!intr_context ());
-  ASSERT (!lock_held_by_current_thread (lock));
+  if (lock_held_by_current_thread (lock)) {
+      // 这里的打印会告诉你到底是哪块内存代表的锁重入了
+      printf ("\n!!! REENTRANT LOCK DETECTED !!!\n");
+      printf ("Lock Address: %p\n", (void *)lock);
+      printf ("Current Thread: %p (%s)\n", thread_current(), thread_current()->name);
+      // 甚至可以打印出锁的名字（如果初始化了）
+      // if (lock->name) printf ("Lock Name: %s\n", lock->name);
+      
+      PANIC ("assertion !lock_held_by_current_thread (lock) failed");
+  }
 
   sema_down (&lock->semaphore);
   lock->holder = thread_current ();

@@ -80,10 +80,12 @@ bool handle_mm_default(void *fault_addr,void *esp UNUSED){
 
         // file_seek(entry->file, entry->offset);
         // if (file_read(entry->file, kpage,entry->read_bytes) != (int)entry->read_bytes){
+        acquire_lock_f();
         if(file_read_at(entry->file,kpage,entry->read_bytes,entry->offset) != (int)entry->read_bytes){
             vm_frame_free(kpage,true);
             return false;
         }
+        release_lock_f();
         memset(kpage + entry->read_bytes, 0 , entry->zero_bytes);
 
         if(!install_page(upage, kpage, entry->writable)){

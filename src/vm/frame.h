@@ -11,3 +11,4 @@ struct frame_table_entry * pick_a_frame_evict(void);
 void unpin_frame(void *kpage);
 void vm_frame_set_pinned (void *kpage, bool new_value);
 
+void vm_frame_do_free(void * kpage,bool page_free);
