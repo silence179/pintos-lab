@@ -159,7 +159,7 @@ page_fault (struct intr_frame *f)
   }
 
   void * esp = user ? f->esp : cur->current_esp;
-
+  printf ("PF at %p, EIP: %p, user: %d\n", fault_addr, f->eip, user);
   if (!handle_mm_default(fault_page,esp)){
       goto fail;
   }
@@ -168,9 +168,11 @@ page_fault (struct intr_frame *f)
 fail:
   if (!user)
   {
-      f->eip = (void *)f->eax;//eip:寄存器存放下一个CPU指令存放的内存地址 EAX:"累加器"(accumulator), 它是很多加法乘法指令的缺省寄存器。bshd
-      f->eax = -1;
-      return;
+      thread_current()->exit_code = -1;
+      thread_exit();
+      // f->eip = (void *)f->eax;//eip:寄存器存放下一个CPU指令存放的内存地址 EAX:"累加器"(accumulator), 它是很多加法乘法指令的缺省寄存器。bshd
+      // f->eax = -1;
+      // return;
   }
   /* To implement virtual memory, delete the rest of the function
      body, and replace it with code that brings in the page to

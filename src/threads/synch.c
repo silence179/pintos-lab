@@ -200,11 +200,8 @@ lock_acquire (struct lock *lock)
       printf ("Lock Address: %p\n", (void *)lock);
       printf ("Current Thread: %p (%s)\n", thread_current(), thread_current()->name);
       // 甚至可以打印出锁的名字（如果初始化了）
-      // if (lock->name) printf ("Lock Name: %s\n", lock->name);
-      
       PANIC ("assertion !lock_held_by_current_thread (lock) failed");
   }
-
   sema_down (&lock->semaphore);
   lock->holder = thread_current ();
 }

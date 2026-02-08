@@ -18,7 +18,7 @@
 #include "vm/frame.h"
 #include "vm/swap.h"
 
-
+extern struct recursive_lock lock_f;
 struct supt_entry * supt_lookup(struct supplemental_page_table* supt,void * upage){
     struct supt_entry tmp_entry;
     tmp_entry.upage = upage;
@@ -62,18 +62,20 @@ bool lazy_load_frame(struct file *file, off_t ofs, uint8_t *upage, uint32_t read
     return true;
 }
 
-bool handle_mm_default(void *fault_addr,void *esp UNUSED){
+bool handle_mm_default(void *fault_addr,void *esp ){
     struct thread * thread = thread_current();
     void *upage = pg_round_down(fault_addr);
     struct supt_entry *entry = supt_lookup(thread->supt, upage);
 
     if(entry == NULL){
         // void * kpage = vm_frame_alloc(PAL_USER | PAL_ZERO,upage);
+        printf("%p & %p",fault_addr,esp);
+        PANIC("dffas");
         return false;
     }
     lock_acquire(&thread->supt->supt_lock);
     if(entry->type == ON_FRAME) {
-        PANIC("fdasd");
+        // PANIC("fdasd");
         lock_release(&thread->supt->supt_lock);
         return true;
     }
@@ -81,8 +83,10 @@ bool handle_mm_default(void *fault_addr,void *esp UNUSED){
 
     if(entry->type == FROM_FILE){
         void * kpage = vm_frame_alloc(PAL_USER,upage);
-        if (kpage == NULL)
+        if (kpage == NULL){
+            PANIC("here?");
             return false;
+        }
 
         // file_seek(entry->file, entry->offset);
         // if (file_read(entry->file, kpage,entry->read_bytes) != (int)entry->read_bytes){
@@ -94,6 +98,7 @@ bool handle_mm_default(void *fault_addr,void *esp UNUSED){
             return false;
         }
         release_lock_f();
+
         lock_acquire(&thread->supt->supt_lock);
         memset(kpage + entry->read_bytes, 0 , entry->zero_bytes);
 
@@ -149,7 +154,7 @@ supt_destroy_callback (struct hash_elem *e, void *aux UNUSED)
         /* 1. 如果在内存中，先解除页表映射，再释放物理帧 */
         if (entry->kpage != NULL) {
             pagedir_clear_page(thread_current()->pagedir, entry->upage);
-            vm_frame_free(entry->kpage, true); 
+            vm_frame_do_free(entry->kpage, true); 
         }
     } 
     else if (entry->type == ON_SWAP) {

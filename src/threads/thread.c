@@ -89,19 +89,28 @@ static tid_t allocate_tid (void);
 
    It is not safe to call thread_current() until this function
    finishes. */
-static struct lock lock_f;
+struct recursive_lock lock_f;
 void 
 acquire_lock_f (void)
 {
-    if(lock_held_by_current_thread(&lock_f))
-        PANIC("find?");
-  lock_acquire(&lock_f);
+    if(lock_held_by_current_thread(&lock_f.lock)){
+        lock_f.count ++;
+        printf("Recursive depth: %d\n",lock_f.count);
+    }
+    else{
+        lock_acquire(&lock_f.lock);
+        lock_f.count = 1;
+    }
 }
 
 void 
 release_lock_f (void)
 {
-  lock_release(&lock_f);
+    ASSERT(lock_held_by_current_thread(&lock_f.lock));
+    lock_f.count --;
+    if(lock_f.count == 0){
+        lock_release(&lock_f.lock);
+    }
 }
 void
 thread_init (void) 
@@ -112,7 +121,7 @@ thread_init (void)
   list_init (&ready_list);
   list_init (&all_list);
 
-  lock_init(&lock_f);
+  lock_init(&lock_f.lock);
   /* Set up a thread structure for the running thread. */
   initial_thread = running_thread ();
   init_thread (initial_thread, "main", PRI_DEFAULT);

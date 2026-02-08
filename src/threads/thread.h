@@ -17,6 +17,10 @@ enum thread_status
     THREAD_DYING        /* About to be destroyed. */
   };
 
+struct recursive_lock{
+    struct lock lock;
+    size_t count;
+};
 /* Thread identifier type.
    You can redefine this to whatever type you like. */
 typedef int tid_t;

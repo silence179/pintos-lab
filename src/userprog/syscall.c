@@ -13,7 +13,7 @@
 #include "devices/input.h"
 
 #define max_syscall 20
-
+extern struct recursive_lock lock_f;
 
 
 static void syscall_handler (struct intr_frame *);
@@ -21,8 +21,9 @@ static void (*syscalls[max_syscall])(struct intr_frame *);
 static void *checkpointer(const void *vaddr);
 static void err_exit(void);
 static int get_user(const uint8_t *uaddr);
-static void check_buffer(const void *vaddr, size_t size);
+// static void check_buffer(const void *vaddr, size_t size);
 static void check_and_preload_buffer (void *buffer, unsigned size, bool writable);
+static void unpin_buffer(void *buffer, unsigned size) ;
 
 struct thread_file * find_file_id (uint32_t file_id);
 bool is_valid_pointer (void* esp,uint8_t argc);
@@ -190,8 +191,7 @@ void sys_read(struct intr_frame* f){
   // if (!is_valid_pointer (buffer, 1) || !is_valid_pointer (buffer + size,1)){
   //   err_exit();
   // }
-
-  check_and_preload_buffer(buffer,size,false);
+  check_and_preload_buffer(buffer,size,true);
 
   if (fd == 0)//stdin
   {
@@ -213,6 +213,7 @@ void sys_read(struct intr_frame* f){
       f->eax = -1;
     }
   }
+  unpin_buffer(buffer, size);
 }
 
 void sys_write(struct intr_frame* f){
@@ -223,6 +224,7 @@ void sys_write(struct intr_frame* f){
   int fd = *user_ptr;
   const char * buffer = (const char *)*(user_ptr+1);
   off_t size = *(user_ptr+2);
+  check_and_preload_buffer((void*)buffer, size, true);
   if (fd == 1) {
     putbuf(buffer,size);
     f->eax = size;
@@ -242,7 +244,9 @@ void sys_write(struct intr_frame* f){
       f->eax = 0;//can't write,return 0
     }
   }
+  unpin_buffer((void*)buffer,size);
 }
+
 void sys_seek(struct intr_frame* f){
   uint32_t *user_ptr = f->esp;
   checkpointer(user_ptr + 5);
@@ -308,49 +312,49 @@ bool is_valid_pointer (void* esp,uint8_t argc){
 /* 在 syscall.c 中实现 */
 static
 void check_and_preload_buffer (void *buffer, unsigned size, bool writable) {
-    char *ptr = (char *) buffer;
-    
-    for (unsigned i = 0; i < size; i += PGSIZE) {
-        /* 1. 首先检查地址是否属于用户空间（基础检查） */
-        if (!is_user_vaddr (ptr + i)) {
-            err_exit();
-        }
 
-        /* 2. 强行触发 Page Fault */
-        if (writable) {
-            /* 尝试写入：如果该页是 FROM_FILE 或 ON_SWAP，
-               此时会进入 handle_mm_default，且线程不持有 filesys_lock */
-            *(ptr + i) = *(ptr + i); 
-        } else {
-            /* 尝试读取：只需读出一个字节即可 */
-            char temp = *(ptr + i);
-            (void) temp; // 防止编译器警告变量未使用
-        }
+    char *start = pg_round_down(buffer);
+    char *end = pg_round_down((char *)buffer + size - 1);
+    for (char *p = start; p <= end; p += PGSIZE) {
+        if (!is_user_vaddr (p)) err_exit();
         
-        /* 3. (可选但推荐) 如果你实现了 Pinning，在这里把页钉住 */
-        // vm_frame_set_pinned(ptr + i,true); 
-    }
-
-    /* 别忘了检查 Buffer 的最后一个字节，防止跨页 */
-    if (size > 0) {
-        void *last_byte = (char *)buffer + size - 1;
-        if (!is_user_vaddr (last_byte)) err_exit();
-        if (writable) *(char *)last_byte = *(char *)last_byte;
-        else { char temp = *(char *)last_byte; (void)temp; }
+        /* 1. 触发缺页：确保 handle_mm_default 被调用并将页加载到内存 */
+        if (writable) {
+            volatile char *vp = (volatile char *)p;
+            *vp = *vp;
+            // *(char *)p = *(char *)p;
+        }
+        else { char temp = *(char *)p; (void)temp; }
+        
+        /* 2. 获取物理地址：只有加载后，pagedir 才有这个映射 */
+        void *kpage = pagedir_get_page(thread_current()->pagedir, p);
+        
+        /* 3. 钉住物理帧：防止在 acquire_lock_f 等待期间被驱逐 */
+        if (kpage != NULL) {
+            vm_frame_set_pinned(kpage, true);
+        }
     }
 }
 
+static void unpin_buffer(void *buffer, unsigned size) {
+    char *start = pg_round_down(buffer);
+    char *end = pg_round_down((char *)buffer + size - 1);
+    for (char *p = start; p <= end; p += PGSIZE) {
+        void *kpage = pagedir_get_page(thread_current()->pagedir, p);
+        if (kpage) vm_frame_set_pinned(kpage, false);
+    }
+}
 static int get_user(const uint8_t *uaddr){
     int result;
     asm ("movl $1f, %0; movzbl %1, %0; 1:" : "=&a" (result) : "m" (*uaddr));
     return result;
 }
-static void check_buffer(const void *vaddr, size_t size) {
-    if (vaddr == NULL) err_exit();
-    const char *ptr = (const char *)vaddr;
-    for (size_t i = 0; i < size; i++) {
-        if (!is_user_vaddr(ptr + i) || pagedir_get_page(thread_current()->pagedir, ptr + i) == NULL) {
-            err_exit();
-        }
-    }
-}
+// static void check_buffer(const void *vaddr, size_t size) {
+//     if (vaddr == NULL) err_exit();
+//     const char *ptr = (const char *)vaddr;
+//     for (size_t i = 0; i < size; i++) {
+//         if (!is_user_vaddr(ptr + i) || pagedir_get_page(thread_current()->pagedir, ptr + i) == NULL) {
+//             err_exit();
+//         }
+//     }
+// }

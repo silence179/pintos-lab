@@ -65,7 +65,8 @@ void * vm_frame_alloc(enum palloc_flags flags,void * upage){
     if (kpage == NULL) {
         // 1. 挑选驱逐帧
         struct frame_table_entry *f_evicted = pick_a_frame_evict();
-        // printf("Evicted once\n");
+
+        ASSERT(f_evicted->pinned != true);
         ASSERT(f_evicted != NULL);
         ASSERT(f_evicted->thread != NULL);
 
@@ -233,6 +234,7 @@ struct frame_table_entry * pick_a_frame_evict(void){
         else if(pagedir_is_accessed(entry->thread->pagedir,entry->upage)){
             pagedir_set_accessed(entry->thread->pagedir, entry->upage, false);
             // f++;
+            // printf("%d\n",f);
             continue;
         }
         else
