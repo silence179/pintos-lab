@@ -16,17 +16,19 @@
 #include "userprog/process.h"
 #include "vm/swap.h"
 #include "vm/frame.h"
+#include "vm/swap.h"
 
 
-struct supt_entry * supt_lookup(struct hash* supt,void * upage){
+struct supt_entry * supt_lookup(struct supplemental_page_table* supt,void * upage){
     struct supt_entry tmp_entry;
     tmp_entry.upage = upage;
-    
-    struct hash_elem* tmp_elem = hash_find(supt, &tmp_entry.hash_elem);
+    lock_acquire(&supt->supt_lock);
+    struct hash_elem* tmp_elem = hash_find(&supt->page_map, &tmp_entry.hash_elem);
     if (tmp_elem == NULL) {
+        lock_release(&supt->supt_lock);
         return NULL;
     }
-    
+    lock_release(&supt->supt_lock);
     return hash_entry(tmp_elem, struct supt_entry, hash_elem);
 }
 
@@ -48,8 +50,10 @@ bool lazy_load_frame(struct file *file, off_t ofs, uint8_t *upage, uint32_t read
     entry->type = FROM_FILE;
     entry->kpage = NULL;
 
-
+    lock_acquire(&thread_current()->supt->supt_lock);
     struct hash_elem * old = hash_insert(supt, &entry->hash_elem);
+    lock_release(&thread_current()->supt->supt_lock);
+
     if(old != NULL){ //说明重复申请了同一块upage,返回false.
         free (entry);
         PANIC("same upage");
@@ -61,18 +65,19 @@ bool lazy_load_frame(struct file *file, off_t ofs, uint8_t *upage, uint32_t read
 bool handle_mm_default(void *fault_addr,void *esp UNUSED){
     struct thread * thread = thread_current();
     void *upage = pg_round_down(fault_addr);
-    struct hash * supt = &thread->supt->page_map;
+    struct supt_entry *entry = supt_lookup(thread->supt, upage);
 
-    struct supt_entry tmp_entry;
-    tmp_entry.upage = upage;
-
-    struct hash_elem *tmp_elem = hash_find(supt,&tmp_entry.hash_elem);
-    if(tmp_elem == NULL){
+    if(entry == NULL){
         // void * kpage = vm_frame_alloc(PAL_USER | PAL_ZERO,upage);
         return false;
     }
-    struct supt_entry * entry = hash_entry(tmp_elem, struct supt_entry, hash_elem);
-    
+    lock_acquire(&thread->supt->supt_lock);
+    if(entry->type == ON_FRAME) {
+        lock_release(&thread->supt->supt_lock);
+        return true;
+    }
+    lock_release(&thread->supt->supt_lock);
+
     if(entry->type == FROM_FILE){
         void * kpage = vm_frame_alloc(PAL_USER,upage);
         if (kpage == NULL)
@@ -80,12 +85,15 @@ bool handle_mm_default(void *fault_addr,void *esp UNUSED){
 
         // file_seek(entry->file, entry->offset);
         // if (file_read(entry->file, kpage,entry->read_bytes) != (int)entry->read_bytes){
+        
         acquire_lock_f();
         if(file_read_at(entry->file,kpage,entry->read_bytes,entry->offset) != (int)entry->read_bytes){
+            PANIC("here");
             vm_frame_free(kpage,true);
             return false;
         }
         release_lock_f();
+        lock_acquire(&thread->supt->supt_lock);
         memset(kpage + entry->read_bytes, 0 , entry->zero_bytes);
 
         if(!install_page(upage, kpage, entry->writable)){
@@ -95,17 +103,21 @@ bool handle_mm_default(void *fault_addr,void *esp UNUSED){
 
         entry->kpage =  kpage; 
         entry->type = ON_FRAME;
+        lock_release(&thread->supt->supt_lock);
+
         unpin_frame(kpage);
         return true;
     }
     if(entry->type == ON_SWAP){
+        PANIC("endsaf");
         /* 1. 分配一个物理帧 */
         void *kpage = vm_frame_alloc(PAL_USER, upage);
         if (kpage == NULL)
             return false;
 
+        lock_acquire(&thread->supt->supt_lock);
+
         /* 2. 从 Swap 分区读回数据 */
-        /* 注意：swap_in 内部应该负责将数据写到 kpage，并释放 swap_index */
         swap_in(kpage,entry->swap_index);
 
         /* 3. 建立映射 */
@@ -113,11 +125,11 @@ bool handle_mm_default(void *fault_addr,void *esp UNUSED){
             vm_frame_free(kpage, true);
             return false;
         }
-
         /* 4. 更新状态 */
         entry->kpage = kpage;
         entry->type = ON_FRAME;
         
+        lock_release(&thread->supt->supt_lock);
         // 记得处理 pin 逻辑，如果是补页触发，补完通常可以 unpin
         unpin_frame(kpage); 
         return true;
@@ -131,9 +143,19 @@ void
 supt_destroy_callback (struct hash_elem *e, void *aux UNUSED) 
 {
     struct supt_entry *entry = hash_entry (e, struct supt_entry, hash_elem);
-    if(entry->kpage != NULL){
-        ASSERT(entry->type == ON_FRAME);
-        vm_frame_free(entry->kpage, false);
+    if (entry->type == ON_FRAME) {
+        /* 1. 如果在内存中，先解除页表映射，再释放物理帧 */
+        if (entry->kpage != NULL) {
+            pagedir_clear_page(thread_current()->pagedir, entry->upage);
+            vm_frame_free(entry->kpage, true); 
+        }
+    } 
+    else if (entry->type == ON_SWAP) {
+        swap_free(entry->swap_index); 
+    }
+    else if (entry->type == FROM_FILE) {
+        /* 3. 如果是文件映射且没有加载，通常不需要额外释放资源 */
+        /* 但如果你 file_reopen 了文件，记得在这里 file_close */
     }
 }
 
@@ -165,5 +187,6 @@ vm_supt_create (void)
     (struct supplemental_page_table*) malloc(sizeof(struct supplemental_page_table));
 
   hash_init (&supt->page_map, supt_hash_func, supt_less_func, NULL);
+  lock_init(&supt->supt_lock);
   return supt;
 }

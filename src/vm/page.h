@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <hash.h>
+#include "threads/synch.h"
 #include "filesys/filesys.h"
 #include "filesys/off_t.h"
 enum page_type{
@@ -30,6 +31,7 @@ struct supplemental_page_table
   {
     /* The hash table, page -> spte */
     struct hash page_map;
+    struct lock supt_lock;
   };
 
 unsigned supt_hash_func (const struct hash_elem *e, void *aux);
@@ -45,6 +47,6 @@ bool handle_mm_default(void *fault_addr,void *esp);
 void supt_destroy_callback (struct hash_elem *e, void *aux UNUSED) ;
 void supt_destroy (struct hash *supt) ;
 
-struct supt_entry * supt_lookup(struct hash* supt,void * upage);
+struct supt_entry * supt_lookup(struct supplemental_page_table* supt,void * upage);
 struct supplemental_page_table* vm_supt_create (void);
 

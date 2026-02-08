@@ -46,3 +46,10 @@ void swap_in(void *kpage,size_t index){
     lock_release(&swap_lock);
     return;
 }
+void swap_free(size_t index){
+    ASSERT(index < bitmap_size(swap_map));
+    ASSERT(bitmap_test(swap_map, index) == true);
+    lock_acquire(&swap_lock);
+    bitmap_set(swap_map,index,false);
+    lock_release(&swap_lock);
+}

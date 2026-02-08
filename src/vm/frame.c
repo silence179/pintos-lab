@@ -63,28 +63,32 @@ void * vm_frame_alloc(enum palloc_flags flags,void * upage){
     lock_acquire(&frame_lock);
     void * kpage = palloc_get_page(flags);
     if (kpage == NULL) {
-        // PANIC("here");
-        struct frame_table_entry * f_evicted = pick_a_frame_evict();
-        // if (clock_ptr == &f_evicted->list_elem) {
-        //     clock_ptr = list_next(clock_ptr);
-        //     // 如果推一下到了末尾，绕回到开头
-        //     if (clock_ptr == list_end(&frame_list)) {
-        //         clock_ptr = list_begin(&frame_list);
-        //     }
-        // }     
-        vm_frame_do_free(kpage, true);
+        struct frame_table_entry *f_evicted = pick_a_frame_evict();
 
-        // 获取 Swap 等信息（此时可以考虑暂时释放锁来提速，但必须保证同步）
-        struct supt_entry* entry = supt_lookup(&f_evicted->thread->supt->page_map, f_evicted->upage);
+        ASSERT(f_evicted!=NULL);
+        ASSERT(f_evicted->thread!=NULL);
+        ASSERT(f_evicted->thread->pagedir!=NULL);
+
+        // 2. 暂存我们需要的信息，因为执行 vm_frame_do_free 后 f_evicted 就不存在了
+        struct thread *t = f_evicted->thread;
+        void *u = f_evicted->upage;
+        void *k = f_evicted->kpage;
+
+        // 3. 执行驱逐前的页表操作
+        pagedir_clear_page(t->pagedir, u);
+
+        // 4. 获取 SUPT 项并执行 Swap (注意：这里可能发生磁盘 I/O)
         
-        pagedir_clear_page(f_evicted->thread->pagedir, f_evicted->upage);
+        struct supt_entry* entry = supt_lookup(t->supt, u);
         entry->type = ON_SWAP;
-        entry->swap_index = swap_out(f_evicted->kpage); // 这里会做磁盘 IO
+        entry->swap_index = swap_out(k); 
         entry->kpage = NULL;
 
-        palloc_free_page(f_evicted->kpage);
-        kpage = palloc_get_page(flags); 
-        free(f_evicted);    
+        // 5. 彻底释放旧的 Frame Entry (从 hash 和 list 移除，且保护 clock_ptr)
+        vm_frame_do_free(k, true);
+
+        kpage = palloc_get_page(flags);
+
     }
     
     struct frame_table_entry * frame = malloc(sizeof(struct frame_table_entry));
@@ -121,6 +125,17 @@ void vm_frame_free(void * kpage,bool page_free){
 
     struct frame_table_entry* f_free = hash_entry(tmp_elem,struct frame_table_entry,hash_elem);
 
+    if (clock_ptr == &f_free->list_elem) {
+            // 如果要删的正是时钟指向的，先把它推到下一个
+            clock_ptr = list_next(clock_ptr);
+            // 如果推到了末尾，绕回开头
+            if (clock_ptr == list_end(&frame_list)) {
+                clock_ptr = list_begin(&frame_list);
+            }
+            // 如果链表空了，设为 NULL
+            if (list_empty(&frame_list)) clock_ptr = NULL;
+    }
+ 
     pagedir_clear_page(f_free->thread->pagedir, f_free->upage);
 
     hash_delete(&frame_map,&f_free->hash_elem);
@@ -131,6 +146,7 @@ void vm_frame_free(void * kpage,bool page_free){
     free(f_free);
     lock_release(&frame_lock);
 }
+
 void vm_frame_do_free(void * kpage,bool page_free){
     struct frame_table_entry tmp_entry;
     tmp_entry.kpage = kpage;
@@ -141,7 +157,16 @@ void vm_frame_do_free(void * kpage,bool page_free){
     }
 
     struct frame_table_entry* f_free = hash_entry(tmp_elem,struct frame_table_entry,hash_elem);
-
+    if (clock_ptr == &f_free->list_elem) {
+            // 如果要删的正是时钟指向的，先把它推到下一个
+            clock_ptr = list_next(clock_ptr);
+            // 如果推到了末尾，绕回开头
+            if (clock_ptr == list_end(&frame_list)) {
+                clock_ptr = list_begin(&frame_list);
+            }
+            // 如果链表空了，设为 NULL
+            if (list_empty(&frame_list)) clock_ptr = NULL;
+    }
     pagedir_clear_page(f_free->thread->pagedir, f_free->upage);
 
     hash_delete(&frame_map,&f_free->hash_elem);
@@ -190,7 +215,7 @@ struct frame_table_entry * clock_ptr_next(void){
 }
 
 void unpin_frame(void *kpage){
-  
+
     if(lock_held_by_current_thread(&frame_lock)){
         PANIC("find out");
     }  
