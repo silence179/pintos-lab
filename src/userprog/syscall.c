@@ -84,9 +84,9 @@ static void* checkpointer(const void *vaddr){
        err_exit();
     }
     void* ptr = pagedir_get_page(thread_current()->pagedir,vaddr);
-    if(ptr == NULL){
-        err_exit(); 
-    } 
+    // if(ptr == NULL){
+    //     err_exit(); 
+    // } 
     uint8_t *check_byteptr = (uint8_t *) vaddr;
     for (uint8_t i = 0; i < 4; i++) 
     {

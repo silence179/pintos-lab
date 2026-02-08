@@ -73,6 +73,7 @@ bool handle_mm_default(void *fault_addr,void *esp UNUSED){
     }
     lock_acquire(&thread->supt->supt_lock);
     if(entry->type == ON_FRAME) {
+        PANIC("fdasd");
         lock_release(&thread->supt->supt_lock);
         return true;
     }
@@ -109,7 +110,6 @@ bool handle_mm_default(void *fault_addr,void *esp UNUSED){
         return true;
     }
     if(entry->type == ON_SWAP){
-        PANIC("endsaf");
         /* 1. 分配一个物理帧 */
         void *kpage = vm_frame_alloc(PAL_USER, upage);
         if (kpage == NULL)
@@ -131,6 +131,8 @@ bool handle_mm_default(void *fault_addr,void *esp UNUSED){
         
         lock_release(&thread->supt->supt_lock);
         // 记得处理 pin 逻辑，如果是补页触发，补完通常可以 unpin
+        // printf("Mapped: %p -> %p\n", fault_addr, kpage);
+
         unpin_frame(kpage); 
         return true;
     }
