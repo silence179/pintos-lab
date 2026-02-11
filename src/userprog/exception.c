@@ -159,7 +159,7 @@ page_fault (struct intr_frame *f)
   }
 
   void * esp = user ? f->esp : cur->current_esp;
-  printf ("PF at %p, EIP: %p, user: %d\n", fault_addr, f->eip, user);
+  // printf ("PF at %p, EIP: %p, user: %d\n", fault_addr, f->eip, user);
   if (!handle_mm_default(fault_page,esp)){
       goto fail;
   }

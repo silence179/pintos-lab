@@ -287,7 +287,6 @@ load (const char *file_name, void (**eip) (void), void **esp)
 
   /* Allocate and activate page directory. */
   t->pagedir = pagedir_create ();
-
   t->supt = vm_supt_create();
 
   if (t->pagedir == NULL) 
@@ -525,7 +524,7 @@ setup_stack (void **esp,int argc,char *argv[])
   kpage =  vm_frame_alloc(PAL_USER | PAL_ZERO,PHYS_BASE - PGSIZE);
   if (kpage != NULL) 
     {
-      success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
+      success = vm_install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
       if (success){
           *esp = PHYS_BASE;
 
@@ -580,6 +579,12 @@ install_page (void *upage, void *kpage, bool writable)
      address, then map our page there. */
   return (pagedir_get_page (t->pagedir, upage) == NULL
           && pagedir_set_page (t->pagedir, upage, kpage, writable));
+}
+
+bool vm_install_page(void *upage,void *kpage,bool writable){
+    bool success = load_stack_page(upage,kpage,writable);
+    success = success & install_page(upage, kpage , writable);
+    return success;
 }
 
 // static void find_tid (struct thread *t, void * aux UNUSED)

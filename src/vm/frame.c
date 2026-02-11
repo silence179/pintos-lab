@@ -61,30 +61,20 @@ void * vm_frame_alloc(enum palloc_flags flags,void * upage){
         PANIC("find out1");
     }
     lock_acquire(&frame_lock);
-    void * kpage = palloc_get_page(flags);
+    void * kpage = palloc_get_page(PAL_USER | flags);
     if (kpage == NULL) {
-        // 1. 挑选驱逐帧
         struct frame_table_entry *f_evicted = pick_a_frame_evict();
 
         ASSERT(f_evicted->pinned != true);
         ASSERT(f_evicted != NULL);
         ASSERT(f_evicted->thread != NULL);
 
-        // 2. 标记为 pinned，防止在我们释放 frame_lock 期间被别人动
         f_evicted->pinned = true;
 
-        // 3. 暂存信息
         struct thread *t = f_evicted->thread;
         void *u = f_evicted->upage;
         void *k = f_evicted->kpage;
 
-        // 4. 【关键】释放全局 frame_lock，允许并发
-        lock_release(&frame_lock);
-
-        // 5. 【关键】获取线程的 supt_lock，保护“页表清除”到“状态更新”的原子性
-        // 防止 handle_mm_fault 在这两步之间插入执行
-        lock_acquire(&t->supt->supt_lock);
-        // 6. 手动查找 SUPT 条目 (代替 supt_lookup 以避免死锁)
         struct supt_entry tmp_key;
         tmp_key.upage = u;
         struct hash_elem *elem = hash_find(&t->supt->page_map, &tmp_key.hash_elem);
@@ -92,17 +82,11 @@ void * vm_frame_alloc(enum palloc_flags flags,void * upage){
         if (elem != NULL) {
             struct supt_entry *entry = hash_entry(elem, struct supt_entry, hash_elem);
             
-            // --- 性能优化开始 ---
-            // 检查页面是否被修改过 (Dirty)
             bool is_dirty = pagedir_is_dirty(t->pagedir, u);
             
-            // 7. 清除硬件页表映射 (此时持有 supt_lock，缺页处理程序会阻塞等待)
             pagedir_clear_page(t->pagedir, u);
 
-            // 8. 根据页面类型决定去向
             if (entry->type == FROM_FILE && !is_dirty) {
-                // 如果是文件页且没改过，不需要写 Swap，直接变回 FROM_FILE
-                // 下次访问时直接从原文件读，省下一次昂贵的磁盘写操作
                 entry->kpage = NULL; 
                 // entry->type 保持 FROM_FILE 或重置为 FROM_FILE
             } else {
@@ -116,13 +100,6 @@ void * vm_frame_alloc(enum palloc_flags flags,void * upage){
             PANIC("Evicted frame has no SUPT entry (Kernel bug)");
         }
 
-        // 9. 状态更新完毕，释放 supt_lock
-        lock_release(&t->supt->supt_lock);
-
-        // 10. 重新获取全局 frame_lock 进行物理内存释放
-        lock_acquire(&frame_lock);
-        
-        // 彻底释放旧的 Frame (vm_frame_do_free 内部会处理 hash/list 移除)
         vm_frame_do_free(k, true);
 
         // 11. 再次尝试分配
@@ -144,6 +121,9 @@ void * vm_frame_alloc(enum palloc_flags flags,void * upage){
     hash_insert(&frame_map,&frame->hash_elem);
 
     lock_release(&frame_lock);
+
+    // printf("frame_size = %d ,upage = %p,kpage = %p\n",list_size(&frame_list),upage,kpage);
+
     return kpage;
 
 }
@@ -154,35 +134,7 @@ void vm_frame_free(void * kpage,bool page_free){
         PANIC("find out");
     }
     lock_acquire(&frame_lock);
-    struct frame_table_entry tmp_entry;
-    tmp_entry.kpage = kpage;
-
-    struct hash_elem* tmp_elem = hash_find(&frame_map, &tmp_entry.hash_elem);
-    if(tmp_elem == NULL){
-        PANIC("hash is empty,memery leak");
-    }
-
-    struct frame_table_entry* f_free = hash_entry(tmp_elem,struct frame_table_entry,hash_elem);
-
-    if (clock_ptr == &f_free->list_elem) {
-            // 如果要删的正是时钟指向的，先把它推到下一个
-            clock_ptr = list_next(clock_ptr);
-            // 如果推到了末尾，绕回开头
-            if (clock_ptr == list_end(&frame_list)) {
-                clock_ptr = list_begin(&frame_list);
-            }
-            // 如果链表空了，设为 NULL
-            if (list_empty(&frame_list)) clock_ptr = NULL;
-    }
- 
-    pagedir_clear_page(f_free->thread->pagedir, f_free->upage);
-
-    hash_delete(&frame_map,&f_free->hash_elem);
-    list_remove(&f_free->list_elem);
-
-    if(page_free)
-        palloc_free_page(kpage);
-    free(f_free);
+    vm_frame_do_free(kpage,  page_free);
     lock_release(&frame_lock);
 }
 

@@ -41,6 +41,7 @@ bool supt_less_func (const struct hash_elem *a,
 
 bool lazy_load_frame(struct file* file,off_t ofs ,uint8_t *upage,
                      uint32_t read_bytes,uint32_t zero_bytes,bool writable);
+bool load_stack_page(void *upage ,void *kpage ,bool writable);
 void init_supt(struct hash * hash);
 
 bool handle_mm_default(void *fault_addr,void *esp);

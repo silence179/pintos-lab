@@ -62,6 +62,34 @@ bool lazy_load_frame(struct file *file, off_t ofs, uint8_t *upage, uint32_t read
     return true;
 }
 
+bool load_stack_page(void *upage ,void *kpage ,bool writable){
+    struct supt_entry * entry = malloc(sizeof(struct supt_entry));
+
+    if(entry == NULL){
+        PANIC("run out of kernel memery ");
+        return false;
+    }
+    struct hash *supt = &thread_current()->supt->page_map;
+
+    entry->upage = upage;
+    // entry->file = file_reopen(file);
+    entry->writable = writable;
+    entry->type = ON_FRAME;
+    entry->kpage = kpage;
+
+    lock_acquire(&thread_current()->supt->supt_lock);
+    struct hash_elem * old = hash_insert(supt, &entry->hash_elem);
+    lock_release(&thread_current()->supt->supt_lock);
+
+    if(old != NULL){ //说明重复申请了同一块upage,返回false.
+        free (entry);
+        PANIC("same upage");
+        return false;
+    }
+    return true;
+
+}
+
 bool handle_mm_default(void *fault_addr,void *esp ){
     struct thread * thread = thread_current();
     void *upage = pg_round_down(fault_addr);
@@ -69,13 +97,11 @@ bool handle_mm_default(void *fault_addr,void *esp ){
 
     if(entry == NULL){
         // void * kpage = vm_frame_alloc(PAL_USER | PAL_ZERO,upage);
-        printf("%p & %p",fault_addr,esp);
-        PANIC("dffas");
+        // printf("%p & %p",fault_addr,esp);
         return false;
     }
     lock_acquire(&thread->supt->supt_lock);
     if(entry->type == ON_FRAME) {
-        // PANIC("fdasd");
         lock_release(&thread->supt->supt_lock);
         return true;
     }
@@ -88,9 +114,6 @@ bool handle_mm_default(void *fault_addr,void *esp ){
             return false;
         }
 
-        // file_seek(entry->file, entry->offset);
-        // if (file_read(entry->file, kpage,entry->read_bytes) != (int)entry->read_bytes){
-        
         acquire_lock_f();
         if(file_read_at(entry->file,kpage,entry->read_bytes,entry->offset) != (int)entry->read_bytes){
             PANIC("here");
@@ -135,7 +158,7 @@ bool handle_mm_default(void *fault_addr,void *esp ){
         entry->type = ON_FRAME;
         
         lock_release(&thread->supt->supt_lock);
-        // 记得处理 pin 逻辑，如果是补页触发，补完通常可以 unpin
+
         // printf("Mapped: %p -> %p\n", fault_addr, kpage);
 
         unpin_frame(kpage); 
@@ -145,24 +168,16 @@ bool handle_mm_default(void *fault_addr,void *esp ){
     return false;
 }
 
-/* 哈希表销毁的回调函数，用于释放每一个条目占用的资源 */
 void 
 supt_destroy_callback (struct hash_elem *e, void *aux UNUSED) 
 {
     struct supt_entry *entry = hash_entry (e, struct supt_entry, hash_elem);
-    if (entry->type == ON_FRAME) {
-        /* 1. 如果在内存中，先解除页表映射，再释放物理帧 */
-        if (entry->kpage != NULL) {
-            pagedir_clear_page(thread_current()->pagedir, entry->upage);
-            vm_frame_do_free(entry->kpage, true); 
-        }
-    } 
+    if (entry->kpage != NULL) {
+        pagedir_clear_page(thread_current()->pagedir, entry->upage);
+        vm_frame_free(entry->kpage, true); 
+    }
     else if (entry->type == ON_SWAP) {
         swap_free(entry->swap_index); 
-    }
-    else if (entry->type == FROM_FILE) {
-        /* 3. 如果是文件映射且没有加载，通常不需要额外释放资源 */
-        /* 但如果你 file_reopen 了文件，记得在这里 file_close */
     }
 }
 
